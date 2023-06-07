@@ -1,0 +1,159 @@
+import pandas as pd
+import numpy as np
+from tkinter import Tk
+from tkinter.filedialog import askopenfilename, asksaveasfilename
+
+# Create a Tkinter root window
+root = Tk()
+root.withdraw()  # Hide the root window
+
+try:
+    # Open the file picker dialog
+    clockIn_File = askopenfilename()
+    payRoll_File = askopenfilename()
+
+    # Check if a file path was selected
+    if not clockIn_File or not payRoll_File:
+        print("No file selected.")
+        raise SystemExit
+
+    # Read the Excel files
+    df1 = pd.read_excel(clockIn_File)
+    df2 = pd.read_excel(payRoll_File)
+
+    # Keep only 'Employee name', 'Ticket Date', 'Agency' and 'JobNo|Customer|Description' columns in df2
+    df2 = df2[['Employee Name', 'Ticket Date', 'Agency', 'JobNo|Customer|Description', 'Supervisors Name']]
+
+    # Convert 'Ticket Date' to datetime in both dataframes
+    df1['Ticket Date'] = pd.to_datetime(df1['Ticket Date'])
+    df2['Ticket Date'] = pd.to_datetime(df2['Ticket Date'])
+
+    # If 'Actual Clock In Time' and 'Actual Clock Out Time' are not datetime, convert them
+    df1['Actual Clock In Time'] = pd.to_datetime(df1['Actual Clock In Time'])
+    df1['Actual Clock Out Time'] = pd.to_datetime(df1['Actual Clock Out Time'])
+
+    # Calculate 'Actual Hours Worked' as the difference between 'Actual Clock Out Time' and 'Actual Clock In Time',
+    # converted to hours
+    df1['Actual Hours Worked'] = (df1['Actual Clock Out Time'] - df1['Actual Clock In Time']).dt.total_seconds() / 3600
+
+    # Round 'Actual Hours Worked' to 2 decimal places
+    df1['Actual Hours Worked'] = df1['Actual Hours Worked'].apply(lambda x: round(x, 2))
+
+    # Round 'Actual Hours Worked' using the 7-minute rule
+    df1['Actual Hours Worked'] = df1['Actual Hours Worked'].apply(lambda x: round((x * 60 + 7) // 15 / 4, 2))
+
+    # Add 'Day of the Week' column
+    df1['Day of the Week'] = df1['Ticket Date'].dt.day_name()
+
+    # Merge dataframes based on 'Employee name' and 'Ticket Date'
+    merged_df = pd.merge(df1, df2, on=['Employee Name', 'Ticket Date'], how='left')
+
+    # If 'Agency' is blank, fill with 'CSI'
+    merged_df['Agency'] = merged_df['Agency'].fillna('CSI')
+
+    # Create a new dataframe for rows with errors
+    errors_df = merged_df[(merged_df['Actual Clock In Time'].isna()) |
+                          (merged_df['Actual Clock Out Time'].isna()) |
+                          (merged_df['Actual Hours Worked'] < 8)].copy()
+
+
+    # Create the 'Error Description' column
+    def generate_error_desc(row):
+        if pd.isnull(row['Actual Clock In Time']) and pd.isnull(row['Actual Clock Out Time']):
+            return 'No Clock In or Clock Out Time'
+        elif pd.isnull(row['Actual Clock In Time']):
+            return 'No Clock In'
+        elif pd.isnull(row['Actual Clock Out Time']):
+            return 'No Clock Out'
+        elif row['Actual Hours Worked'] < 8:
+            return 'Less Than 8 Hours'
+        else:
+            return np.nan
+
+
+    errors_df['Error Description'] = errors_df.apply(generate_error_desc, axis=1)
+
+    # Convert 'Ticket Date' back to 'mm/dd/yyyy' format
+    merged_df['Ticket Date'] = merged_df['Ticket Date'].dt.strftime('%m/%d/%Y')
+    errors_df['Ticket Date'] = errors_df['Ticket Date'].dt.strftime('%m/%d/%Y')
+
+    # / Users / TFoster / Desktop / Test / Payroll.xlsx
+
+    # Write the dataframes into a new Excel file with two sheets
+    with pd.ExcelWriter('C: / test / Payroll.xlsx') as writer:
+        merged_df.to_excel(writer, sheet_name='Payroll', index=False)
+        errors_df.to_excel(writer, sheet_name='Errors', index=False)
+
+    # Open the file picker dialog
+    new_file_path = askopenfilename()
+
+    # Check if a file path was selected
+    if new_file_path:
+        # Load the Excel file
+        df = pd.read_excel(new_file_path)
+        print(f"File loaded: {new_file_path}")
+    else:
+        print("No file selected.")
+
+    # Convert the 'Ticket Date', 'Actual Clock In Time', and 'Actual Clock Out Time' columns to datetime
+    df['Ticket Date'] = pd.to_datetime(df['Ticket Date'])
+    df['Actual Clock In Time'] = pd.to_datetime(df['Actual Clock In Time'])
+    df['Actual Clock Out Time'] = pd.to_datetime(df['Actual Clock Out Time'])
+
+    # Calculate the total hours worked for each job
+    df['Total Hours Worked'] = (df['Actual Clock Out Time'] - df['Actual Clock In Time']).dt.total_seconds() / 3600
+
+    # Create a list to hold the results
+    results = []
+
+    # Group by 'Employee Name', 'Quote/Job Number Number', 'Agency', and 'Ticket Date'
+    grouped = df.groupby(['Employee Name', 'Quote/Job Number Number', 'Agency', df['Ticket Date'].dt.date])
+
+    for name, group in grouped:
+        total_hours = group['Total Hours Worked'].sum()
+        regular_hours = min(8, total_hours.apply(lambda x: round(x, 2)))
+        overtime_hours = max(0, total_hours.apply(lambda x: round(x, 2)) - 8)
+
+        # If the Ticket Date is on a Saturday or Sunday, all hours are overtime
+        if group['Ticket Date'].dt.dayofweek.iloc[0] >= 5:
+            overtime_hours = total_hours.apply(lambda x: round(x, 2))
+            regular_hours = 0
+
+        results.append(pd.DataFrame({
+            'Employee Name': [name[0]],
+            'JobNo|Customer|Description': [name[1]],
+            'Ticket Date': [name[2]],
+            'Regular Hours': [regular_hours],
+            'Overtime Hours': [overtime_hours],
+            
+            # 'Supervisors Name': [supervisors_name]
+        }))
+
+    # Concatenate all the results into a single dataframe
+    result = pd.concat(results)
+
+    # Open the save file dialog
+    file_path = asksaveasfilename()
+
+    # Check if a file path was selected
+    if file_path:
+        # Open the file and write some content
+        with open(file_path, 'w') as file:
+            file.write('This is some example content.')
+
+        print(f"File saved at: {file_path}")
+    else:
+        print("No file selected.")
+
+    # Destroy the Tkinter root window
+    root.destroy()
+
+    # Save the result to a new Excel file
+    result.to_excel('C:\\test\\result.xlsx', index=False)
+except Exception as e:
+    print("An error occurred:", str(e))
+    raise SystemExit
+
+finally:
+    # Destroy the Tkinter root window
+    root.destroy()
